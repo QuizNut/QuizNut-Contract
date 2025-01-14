@@ -10,6 +10,15 @@ pub trait ITrivia<T> {
     fn get_trivia_details(self: @T, trivia_id: u32) -> TriviaDetails;
     fn get_prize_details(self: @T, trivia_id: u32) -> PrizeDetails;
     fn start_trivia(ref self: T, trivia_id: u32) -> bool;
+    fn add_question(ref self: T, trivia_id: u32, question: Question);
+    fn get_question(self: @T, trivia_id: u32, question_number: u32) -> Question;
+    fn submit_answer(
+        ref self: T,
+        trivia_id: u32,
+        question_number: u32,
+        participant: ContractAddress,
+        answer: felt252
+    ) -> bool;
 }
 
 #[derive(Copy, Drop, Serde, starknet::Store)]
@@ -34,9 +43,19 @@ struct PrizeDetails {
     third_place_percentage: u8
 }
 
+#[derive(Copy, Drop, Serde, starknet::Store)]
+struct Question {
+    question_text: felt252,
+    answer_a: felt252,
+    answer_b: felt252,
+    answer_c: felt252,
+    answer_d: felt252,
+    correct_answer: felt252 // Will store 'A', 'B', 'C', or 'D'
+}
+
 #[starknet::contract]
 pub mod trivia {
-    use super::{TriviaDetails, PrizeDetails};
+    use super::{TriviaDetails, PrizeDetails, Question};
     use starknet::ContractAddress;
 
     #[storage]
@@ -45,6 +64,14 @@ pub mod trivia {
         trivia_winners: LegacyMap<u32, (ContractAddress, ContractAddress, ContractAddress)>,
         trivia_details: LegacyMap<u32, TriviaDetails>,
         prize_details: LegacyMap<u32, PrizeDetails>,
+        questions: LegacyMap<(u32, u32), Question>, // (trivia_id, question_number) -> Question
+        questions_count: LegacyMap<u32, u32>, // trivia_id -> number of questions
+        participant_scores: LegacyMap<
+            (u32, ContractAddress), (u32, u64)
+        >, // (trivia_id, participant) -> (score, total_time)
+        participant_answers: LegacyMap<
+            (u32, ContractAddress, u32), u64
+        >, // (trivia_id, participant, question_number) -> answer_timestamp
     }
 
     #[external(v0)]
@@ -72,7 +99,9 @@ pub mod trivia {
                 let participant = *participants.at(i);
                 let (score, time) = participant_scores.read(participant);
 
+                // Compare both score AND time
                 if score > best_score || (score == best_score && time < best_time) {
+                    // This participant is better (higher score or same score but faster time)
                     third_place = second_place;
                     second_place = first_place;
                     first_place = participant;
@@ -143,6 +172,60 @@ pub mod trivia {
         fn get_current_round(self: @ContractState, trivia_id: u32) -> u32 {
             let trivia_details = self.trivia_details.read(trivia_id);
             trivia_details.current_round
+        }
+
+        fn add_question(ref self: ContractState, trivia_id: u32, question: Question) {
+            let current_count = self.questions_count.read(trivia_id);
+            self.questions.write((trivia_id, current_count), question);
+            self.questions_count.write(trivia_id, current_count + 1);
+
+            // Update total_rounds in trivia_details
+            let mut trivia_details = self.trivia_details.read(trivia_id);
+            trivia_details.total_rounds = current_count + 1;
+            self.trivia_details.write(trivia_id, trivia_details);
+        }
+
+        fn get_question(self: @ContractState, trivia_id: u32, question_number: u32) -> Question {
+            assert(
+                question_number < self.questions_count.read(trivia_id), 'Invalid question number'
+            );
+            self.questions.read((trivia_id, question_number))
+        }
+
+        fn submit_answer(
+            ref self: ContractState,
+            trivia_id: u32,
+            question_number: u32,
+            participant: ContractAddress,
+            answer: felt252
+        ) -> bool {
+            // Get current question
+            let question = self.questions.read((trivia_id, question_number));
+
+            // Get current timestamp
+            let current_time = starknet::get_block_timestamp();
+
+            // Store answer timestamp
+            self.participant_answers.write((trivia_id, participant, question_number), current_time);
+
+            // Check if answer is correct
+            let is_correct = question.correct_answer == answer;
+
+            // Update participant's score and time
+            let (current_score, total_time) = self
+                .participant_scores
+                .read((trivia_id, participant));
+
+            if is_correct {
+                // Increment score by 1 and update total time
+                self
+                    .participant_scores
+                    .write(
+                        (trivia_id, participant), (current_score + 1, total_time + current_time)
+                    );
+            }
+
+            is_correct
         }
     }
 

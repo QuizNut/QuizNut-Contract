@@ -1,12 +1,18 @@
 //Draft NFT contract not yet integrated with the trivia contract
 
 // SPDX-License-Identifier: MIT
+use starknet::ContractAddress;
+use openzeppelin::token::erc721::ERC721Component;
+use openzeppelin::access::ownable::OwnableComponent;
+use openzeppelin::introspection::src5::SRC5Component;
+
 #[starknet::contract]
 mod TriviaRewardNFT {
+    use super::ContractAddress;
+    use openzeppelin::token::erc721::ERC721Component;
     use openzeppelin::access::ownable::OwnableComponent;
-    use openzeppelin::token::erc721::{ERC721Component, ERC721HooksEmptyImpl};
     use openzeppelin::introspection::src5::SRC5Component;
-    use starknet::ContractAddress;
+    use starknet::get_caller_address;
 
     component!(path: ERC721Component, storage: erc721, event: ERC721Event);
     component!(path: OwnableComponent, storage: ownable, event: OwnableEvent);
@@ -24,24 +30,31 @@ mod TriviaRewardNFT {
     impl ERC721InternalImpl = ERC721Component::InternalImpl<ContractState>;
     impl OwnableInternalImpl = OwnableComponent::InternalImpl<ContractState>;
 
+    #[starknet::interface]
+    trait IERC721<TContractState> {// Standard ERC721 methods
+    }
+
     #[storage]
     struct Storage {
+        _name: felt252,
+        _symbol: felt252,
+        _owners: Map<u256, ContractAddress>,
+        _balances: Map<ContractAddress, u256>,
         #[substorage(v0)]
         erc721: ERC721Component::Storage,
         #[substorage(v0)]
         ownable: OwnableComponent::Storage,
         #[substorage(v0)]
         src5: SRC5Component::Storage,
-        // Additional storage for trivia-specific data
-        token_metadata: LegacyMap<u256, felt252>, // token_id -> metadata URI
-        trivia_id_to_token: LegacyMap<
-            u32, (u256, u256, u256)
-        >, // trivia_id -> (1st, 2nd, 3rd place tokens)
+        token_metadata: Map<u256, felt252>,
+        trivia_id_to_token: Map<u32, (u256, u256, u256)>
     }
 
     #[event]
     #[derive(Drop, starknet::Event)]
     enum Event {
+        Transfer: Transfer,
+        Approval: Approval,
         #[flat]
         ERC721Event: ERC721Component::Event,
         #[flat]

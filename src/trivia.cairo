@@ -1,24 +1,33 @@
+use starknet::ContractAddress;
+
 #[starknet::interface]
-pub trait ITrivia<T> {
+trait ITrivia<TContractState> {
     fn determine_winners(
-        ref self: T,
-        trivia_id: u32,
-        participants: Array<ContractAddress>,
-        participant_scores: LegacyMap<ContractAddress, (u32, u64)>
+        ref self: TContractState, trivia_id: u32, participants: Array<ContractAddress>
     );
-    fn get_winners(self: @T, trivia_id: u32) -> (ContractAddress, ContractAddress, ContractAddress);
-    fn get_trivia_details(self: @T, trivia_id: u32) -> TriviaDetails;
-    fn get_prize_details(self: @T, trivia_id: u32) -> PrizeDetails;
-    fn start_trivia(ref self: T, trivia_id: u32) -> bool;
-    fn add_question(ref self: T, trivia_id: u32, question: Question);
-    fn get_question(self: @T, trivia_id: u32, question_number: u32) -> Question;
+    fn get_winners(
+        self: @TContractState, trivia_id: u32
+    ) -> (ContractAddress, ContractAddress, ContractAddress);
+    fn get_trivia_details(self: @TContractState, trivia_id: u32) -> TriviaDetails;
+    fn get_prize_details(self: @TContractState, trivia_id: u32) -> PrizeDetails;
+    fn start_trivia(ref self: TContractState, trivia_id: u32) -> bool;
+    fn add_question(ref self: TContractState, trivia_id: u32, question: Question);
+    fn get_question(self: @TContractState, trivia_id: u32, question_number: u32) -> Question;
     fn submit_answer(
-        ref self: T,
+        ref self: TContractState,
         trivia_id: u32,
         question_number: u32,
         participant: ContractAddress,
         answer: felt252
     ) -> bool;
+}
+
+#[derive(Copy, Drop, Serde, starknet::Store)]
+enum TriviaStatus {
+    #[default]
+    NotStarted,
+    Active,
+    Completed
 }
 
 #[derive(Copy, Drop, Serde, starknet::Store)]
@@ -53,34 +62,80 @@ struct Question {
     correct_answer: felt252 // Will store 'A', 'B', 'C', or 'D'
 }
 
+#[event]
+#[derive(Drop, starknet::Event)]
+enum Event {
+    TriviaStarted: TriviaStarted,
+    QuestionAdded: QuestionAdded,
+    AnswerSubmitted: AnswerSubmitted,
+    RoundAdvanced: RoundAdvanced,
+}
+
+#[derive(Drop, starknet::Event)]
+struct TriviaStarted {
+    trivia_id: u32,
+    start_time: u64,
+    total_rounds: u32
+}
+
+#[derive(Drop, starknet::Event)]
+struct QuestionAdded {
+    trivia_id: u32,
+    question_number: u32
+}
+
+#[derive(Drop, starknet::Event)]
+struct AnswerSubmitted {
+    trivia_id: u32,
+    participant: ContractAddress,
+    question_number: u32,
+    timestamp: u64
+}
+
+#[derive(Drop, starknet::Event)]
+struct RoundAdvanced {
+    trivia_id: u32,
+    new_round: u32
+}
+
 #[starknet::contract]
-pub mod trivia {
-    use super::{TriviaDetails, PrizeDetails, Question};
-    use starknet::ContractAddress;
+mod trivia {
+    use super::{ContractAddress, ITrivia};
+    use starknet::get_caller_address;
+    use core::array::Array;
+    use core::option::Option;
+    use core::traits::Into;
+    use starknet::storage_access::StorageAccess;
+    use starknet::storage::StorageMap;
+    use core::starknet::storage::{
+        Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
+        StoragePointerWriteAccess
+    };
 
     #[storage]
     struct Storage {
-        // Store winners for each trivia game
-        trivia_winners: LegacyMap<u32, (ContractAddress, ContractAddress, ContractAddress)>,
-        trivia_details: LegacyMap<u32, TriviaDetails>,
-        prize_details: LegacyMap<u32, PrizeDetails>,
-        questions: LegacyMap<(u32, u32), Question>, // (trivia_id, question_number) -> Question
-        questions_count: LegacyMap<u32, u32>, // trivia_id -> number of questions
-        participant_scores: LegacyMap<
-            (u32, ContractAddress), (u32, u64)
-        >, // (trivia_id, participant) -> (score, total_time)
-        participant_answers: LegacyMap<
-            (u32, ContractAddress, u32), u64
-        >, // (trivia_id, participant, question_number) -> answer_timestamp
+        trivia_winners: Map<u32, (ContractAddress, ContractAddress, ContractAddress)>,
+        trivia_details: Map<u32, TriviaDetails>,
+        prize_details: Map<u32, PrizeDetails>,
+        questions: Map<(u32, u32), Question>,
+        questions_count: Map<u32, u32>,
+        participant_scores: Map<(u32, ContractAddress), (u32, u64)>,
+        participant_answers: Map<(u32, ContractAddress, u32), u64>
     }
 
-    #[external(v0)]
+    #[event]
+    #[derive(Drop, starknet::Event)]
+    enum Event {
+        TriviaStarted: TriviaStarted,
+        QuestionAdded: QuestionAdded,
+        AnswerSubmitted: AnswerSubmitted,
+        RoundAdvanced: RoundAdvanced,
+    }
+
+    #[abi(embed_v0)]
     impl Trivia of super::ITrivia<ContractState> {
         fn determine_winners(
-            ref self: ContractState,
-            trivia_id: u32,
-            participants: Array<ContractAddress>,
-            participant_scores: LegacyMap<ContractAddress, (u32, u64)>
+            ref self: ContractState, trivia_id: u32, participants: Array<ContractAddress>
         ) {
             let mut first_place: ContractAddress = starknet::contract_address_const::<0>();
             let mut second_place: ContractAddress = starknet::contract_address_const::<0>();
@@ -272,11 +327,4 @@ pub mod trivia {
         self.trivia_details.write(trivia_id, trivia_details);
         self.prize_details.write(trivia_id, prize_details);
     }
-}
-
-#[derive(Copy, Drop, Serde, starknet::Store)]
-enum TriviaStatus {
-    NotStarted,
-    Active,
-    Completed,
 }

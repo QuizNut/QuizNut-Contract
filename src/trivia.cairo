@@ -20,18 +20,18 @@ trait ITrivia<TContractState> {
         participant: ContractAddress,
         answer: felt252
     ) -> bool;
+    fn check_registration_deadline(self: @TContractState, trivia_id: u32) -> bool;
 }
 
 #[derive(Copy, Drop, Serde, starknet::Store)]
 enum TriviaStatus {
-    #[default]
     NotStarted,
     Active,
     Completed
 }
 
 #[derive(Copy, Drop, Serde, starknet::Store)]
-struct TriviaDetails {
+pub struct TriviaDetails {
     name: felt252,
     description: felt252,
     registration_deadline: u64,
@@ -43,7 +43,7 @@ struct TriviaDetails {
 }
 
 #[derive(Copy, Drop, Serde, starknet::Store)]
-struct PrizeDetails {
+pub struct PrizeDetails {
     entry_fee: u256,
     total_prize_pool: u256,
     current_participants: u32,
@@ -53,7 +53,7 @@ struct PrizeDetails {
 }
 
 #[derive(Copy, Drop, Serde, starknet::Store)]
-struct Question {
+pub struct Question {
     question_text: felt252,
     answer_a: felt252,
     answer_b: felt252,
@@ -62,54 +62,17 @@ struct Question {
     correct_answer: felt252 // Will store 'A', 'B', 'C', or 'D'
 }
 
-#[event]
-#[derive(Drop, starknet::Event)]
-enum Event {
-    TriviaStarted: TriviaStarted,
-    QuestionAdded: QuestionAdded,
-    AnswerSubmitted: AnswerSubmitted,
-    RoundAdvanced: RoundAdvanced,
-}
-
-#[derive(Drop, starknet::Event)]
-struct TriviaStarted {
-    trivia_id: u32,
-    start_time: u64,
-    total_rounds: u32
-}
-
-#[derive(Drop, starknet::Event)]
-struct QuestionAdded {
-    trivia_id: u32,
-    question_number: u32
-}
-
-#[derive(Drop, starknet::Event)]
-struct AnswerSubmitted {
-    trivia_id: u32,
-    participant: ContractAddress,
-    question_number: u32,
-    timestamp: u64
-}
-
-#[derive(Drop, starknet::Event)]
-struct RoundAdvanced {
-    trivia_id: u32,
-    new_round: u32
-}
-
 #[starknet::contract]
-mod trivia {
-    use super::{ContractAddress, ITrivia};
-    use starknet::get_caller_address;
-    use core::array::Array;
-    use core::option::Option;
-    use core::traits::Into;
-    use starknet::storage_access::StorageAccess;
-    use starknet::storage::StorageMap;
+mod trivia {    
+
     use core::starknet::storage::{
         Map, StorageMapReadAccess, StorageMapWriteAccess, StoragePointerReadAccess,
         StoragePointerWriteAccess
+    };
+    use starknet::{
+        ContractAddress,
+        get_caller_address,
+        get_block_timestamp
     };
 
     #[storage]
@@ -129,46 +92,69 @@ mod trivia {
         TriviaStarted: TriviaStarted,
         QuestionAdded: QuestionAdded,
         AnswerSubmitted: AnswerSubmitted,
-        RoundAdvanced: RoundAdvanced,
+        RoundAdvanced: RoundAdvanced
+    }
+
+        #[derive(Drop, starknet::Event)]
+        struct TriviaStarted {
+            #[key]
+            trivia_id: u32,
+            registration_deadline: u64
+        }
+
+    #[derive(Drop, starknet::Event)]
+    struct QuestionAdded {
+        #[key]
+        trivia_id: u32,
+        question_number: u32
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct AnswerSubmitted {
+        #[key]
+        trivia_id: u32,
+        #[key]
+        participant: ContractAddress,
+        question_number: u32
+    }
+
+    #[derive(Drop, starknet::Event)]
+    struct RoundAdvanced {
+        #[key]
+        trivia_id: u32,
+        new_round: u32
     }
 
     #[abi(embed_v0)]
     impl Trivia of super::ITrivia<ContractState> {
         fn determine_winners(
-            ref self: ContractState, trivia_id: u32, participants: Array<ContractAddress>
+            ref self: ContractState,
+            trivia_id: u32,
+            participants: Array<ContractAddress>
         ) {
-            let mut first_place: ContractAddress = starknet::contract_address_const::<0>();
-            let mut second_place: ContractAddress = starknet::contract_address_const::<0>();
-            let mut third_place: ContractAddress = starknet::contract_address_const::<0>();
-
             let mut best_score: u32 = 0;
             let mut best_time: u64 = 0;
+            let mut winner: ContractAddress = participants.at(0);
 
-            // Iterate through participants array
             let mut i: u32 = 0;
             loop {
                 if i >= participants.len() {
                     break;
                 }
-
                 let participant = *participants.at(i);
-                let (score, time) = participant_scores.read(participant);
-
-                // Compare both score AND time
-                if score > best_score || (score == best_score && time < best_time) {
-                    // This participant is better (higher score or same score but faster time)
-                    third_place = second_place;
-                    second_place = first_place;
-                    first_place = participant;
-                    best_score = score;
-                    best_time = time;
+                let participant_data = self.participant_scores.read((trivia_id, participant));
+                let (current_score, current_time) = participant_data;
+                
+                if current_score > best_score || (current_score == best_score && current_time < best_time) {
+                    best_score = current_score;
+                    best_time = current_time;
+                    winner = participant;
                 }
-
                 i += 1;
-            };
+            }
 
             // Store winners for this specific trivia
-            self.trivia_winners.write(trivia_id, (first_place, second_place, third_place));
+            self.trivia_winners.write(trivia_id, (winner, winner, winner));
         }
 
         // To be used by the frontend or other contracts to display past winners
